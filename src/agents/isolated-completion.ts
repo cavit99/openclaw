@@ -73,6 +73,7 @@ type RunIsolatedCompletionParams = {
   assertCurrent?: () => void;
   thinkLevel?: ThinkLevel;
   outputTextPolicy?: AgentHarnessIsolatedCompletionParamsV2["outputTextPolicy"];
+  outputSchema?: AgentHarnessIsolatedCompletionParamsV2["outputSchema"];
   streamParams?: AgentHarnessIsolatedCompletionParamsV2["streamParams"];
 };
 
@@ -526,6 +527,7 @@ async function runIsolatedCompletionOwned(
         assertCurrent,
         thinkLevel: request.thinkLevel,
         outputTextPolicy: request.outputTextPolicy,
+        ...(request.outputSchema ? { outputSchema: request.outputSchema } : {}),
       };
       let result: AgentHarnessIsolatedCompletionResult | undefined;
       if (harness.runIsolatedCompletionV2) {
