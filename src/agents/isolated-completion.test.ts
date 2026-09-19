@@ -429,9 +429,8 @@ describe("runIsolatedCompletion", () => {
   );
 
   it("forwards the native output schema to a V2 harness", async () => {
-    const dispatch = vi.fn(async (_params: unknown) => ({
-      assistant: isolatedAssistant([{ type: "text", text: '{"ok":true}' }]),
-    }));
+    const assistant = isolatedAssistant([{ type: "text", text: '{"ok":true}' }]);
+    const dispatch = vi.fn(async (_params: unknown) => ({ assistant }));
     registerIsolatedHarness({ runIsolatedCompletionV2: dispatch });
     const outputSchema = { type: "object" };
 
