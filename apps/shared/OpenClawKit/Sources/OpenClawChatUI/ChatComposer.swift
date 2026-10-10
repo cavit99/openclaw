@@ -1288,6 +1288,22 @@ extension OpenClawChatComposer {
             .accessibilityLabel(Text(verbatim: "Send message"))
             .accessibilityIdentifier("chat-send-message")
             .disabled(!self.canSendMessage)
+            .contextMenu {
+                if self.inputModel?.canChooseSendMode == true, self.canSendMessage {
+                    Button {
+                        self.sendDraftIfEnabled(queueMode: .steer)
+                    } label: {
+                        Label("Steer now", systemImage: "arrow.turn.up.right")
+                            .font(OpenClawChatTypography.body)
+                    }
+                    Button {
+                        self.sendDraftIfEnabled(queueMode: .followup)
+                    } label: {
+                        Label("Queue next", systemImage: "clock")
+                            .font(OpenClawChatTypography.body)
+                    }
+                }
+            }
         }
     }
 
@@ -1621,8 +1637,8 @@ extension OpenClawChatComposer {
         }
     }
 
-    private func sendDraftIfEnabled() {
+    private func sendDraftIfEnabled(queueMode: OpenClawChatQueueMode? = nil) {
         guard self.canSendMessage else { return }
-        self.inputModel?.send()
+        self.inputModel?.send(queueMode: queueMode)
     }
 }
