@@ -45,7 +45,7 @@ import {
   resolveIsolatedCompletionProvider,
   resolveIsolatedCompletionRoute,
 } from "./isolated-completion-route.js";
-import { ensureAuthProfileStore } from "./model-auth.js";
+import { ensureAuthProfileStore, type ResolvedProviderAuth } from "./model-auth.js";
 import type { ModelRef } from "./model-ref-shared.js";
 import { acquireAgentRunPreparedModelRuntime } from "./prepared-model-runtime.js";
 import {
@@ -85,6 +85,7 @@ type RunIsolatedCompletionParams = {
   /** Adapt host authorization failures to the calling completion API's error contract. */
   mapOperatorAuthorizationError?: (error: unknown) => Error;
   thinkLevel?: ThinkLevel;
+  outputSchema?: AgentHarnessIsolatedCompletionParamsV2["outputSchema"];
   outputTextPolicy?: AgentHarnessIsolatedCompletionParamsV2["outputTextPolicy"];
   streamParams?: AgentHarnessIsolatedCompletionParamsV2["streamParams"];
 };
@@ -97,10 +98,6 @@ export type IsolatedCompletionResult = {
   /** CLI runtimes may not report token usage; absence must not be projected as zero. */
   usage?: UsageLike;
 };
-
-type AgentHarnessIsolatedCompletionParams = Parameters<
-  NonNullable<AgentHarness["runIsolatedCompletion"]>
->[0];
 
 function clampIsolatedStreamParams(
   streamParams: RunIsolatedCompletionParams["streamParams"],
@@ -221,9 +218,10 @@ async function runCliIsolatedCompletion(params: {
   );
 }
 
-function prepareIsolatedHostAuthorization<
-  T extends Pick<AgentHarnessIsolatedCompletionParams, "model" | "auth">,
->(harness: AgentHarness, authorization: T): T {
+function prepareIsolatedHostAuthorization<T extends { model: Model; auth: ResolvedProviderAuth }>(
+  harness: AgentHarness,
+  authorization: T,
+): T {
   if (harness.id === "openclaw") {
     return authorization;
   }
@@ -595,6 +593,7 @@ async function runIsolatedCompletionOwned(
                 authorization.owner === "host"
                   ? prepareIsolatedHostAuthorization(harness, authorization)
                   : authorization,
+              ...(request.outputSchema ? { outputSchema: request.outputSchema } : {}),
               streamParams: clampIsolatedStreamParams(request.streamParams, modelMaxTokens),
             });
             priorProfileAttempted ||= attempt?.kind === "profile";
@@ -622,7 +621,7 @@ async function runIsolatedCompletionOwned(
         }
       } else {
         const authorization = await prepareHostAuthorization(request.authProfileId);
-        const harnessParams: AgentHarnessIsolatedCompletionParams = {
+        const harnessParams: Parameters<NonNullable<AgentHarness["runIsolatedCompletion"]>>[0] = {
           ...commonParams,
           streamParams: clampIsolatedStreamParams(
             request.streamParams,
