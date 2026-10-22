@@ -1,6 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { runBoundedCodexAppServerTurn } from "./bounded-turn.js";
 import { createClientFactory } from "./bounded-turn.test-harness.js";
+import * as sharedClients from "./shared-client.js";
+
+afterEach(() => vi.restoreAllMocks());
 
 const outputSchema = {
   type: "object",
@@ -13,10 +16,11 @@ function runSchemaTurn(
   fake: ReturnType<typeof createClientFactory>,
   overrides: { assertCurrent?: () => void } = {},
 ) {
+  vi.spyOn(sharedClients, "createIsolatedCodexAppServerClient").mockImplementation(fake.factory);
   return runBoundedCodexAppServerTurn({
     model: { mode: "required", id: "gpt-5.4" },
     timeoutMs: 5_000,
-    options: { clientFactory: fake.factory },
+    options: {},
     taskLabel: "isolated completion",
     developerInstructions: "Return structured output.",
     input: [{ type: "text", text: "Extract the result.", text_elements: [] }],

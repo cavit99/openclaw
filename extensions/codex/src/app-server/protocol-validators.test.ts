@@ -127,7 +127,12 @@ describe("passive native turn items", () => {
     "does not admit %s with managed hooks enabled",
     (type) => {
       expect(() =>
-        assertCodexPassiveTurnItems([passiveItem(type)], prompt, "completion", managedHooks),
+        assertCodexPassiveTurnItems(
+          [passiveItem(type)],
+          submittedInput,
+          "completion",
+          managedHooks,
+        ),
       ).toThrow(`unexpected native item: ${type}`);
     },
   );

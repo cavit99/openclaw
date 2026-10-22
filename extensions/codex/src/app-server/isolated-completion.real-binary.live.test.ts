@@ -24,13 +24,16 @@ describeLive("Codex isolated completion real-binary structured output", () => {
         import.meta.dirname,
         "../../node_modules/@openai/codex/bin/codex.js",
       );
+      const appServer = {
+        transport: "stdio" as const,
+        homeScope: "user" as const,
+        command: process.execPath,
+        args: [codexEntry, "app-server", "--listen", "stdio://"],
+      };
       const client = await createIsolatedCodexAppServerClient({
         startOptions: {
-          transport: "stdio",
-          homeScope: "user",
-          command: process.execPath,
+          ...appServer,
           commandSource: "config",
-          args: [codexEntry, "app-server", "--stdio"],
           headers: {},
         },
         agentDir: workspace,
@@ -53,7 +56,7 @@ describeLive("Codex isolated completion real-binary structured output", () => {
           model: { mode: "required", id: modelId },
           timeoutMs: 120_000,
           agentDir: workspace,
-          options: { clientFactory: async () => client },
+          options: { pluginConfig: { appServer } },
           taskLabel: "structured-output live test",
           developerInstructions: "Return only the requested structured result.",
           input: [
@@ -80,7 +83,7 @@ describeLive("Codex isolated completion real-binary structured output", () => {
           model: { mode: "required", id: modelId },
           timeoutMs: 120_000,
           agentDir: workspace,
-          options: { clientFactory: async () => client },
+          options: { pluginConfig: { appServer } },
           taskLabel: "structured-output compatibility live test",
           developerInstructions: "Return only the requested JSON result.",
           input: [
