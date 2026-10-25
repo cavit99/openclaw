@@ -49,12 +49,12 @@ allowlist mode instead.
         "enabled": true,
         "llm": {
           "allowModelOverride": true,
-          "allowedCompletionModels": ["openai/gpt-6-astra"],
+          "allowedCompletionModels": ["openai/gpt-5.6-sol"],
           "allowAuthProfileOverride": true
         },
         "config": {
           "defaultProvider": "openai",
-          "defaultModel": "gpt-6-astra",
+          "defaultModel": "gpt-5.6-sol",
           "defaultAuthProfileId": "main",
           "maxTokens": 800,
           "timeoutMs": 30000

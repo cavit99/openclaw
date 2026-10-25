@@ -76,7 +76,7 @@ export function createClientFactory(
     managedRequirements?: JsonValue;
     hooks?: JsonValue[];
     terminalItems?: JsonValue[];
-    rejectOutputSchema?: boolean;
+    rejectOutputSchema?: boolean | string;
   } = {},
 ) {
   const methods: string[] = [];
@@ -164,13 +164,16 @@ export function createClientFactory(
                 threadId: "thread-finalizer",
                 turnId: "turn-finalizer",
                 error: {
-                  message: JSON.stringify({
-                    error: {
-                      type: "invalid_request_error",
-                      code: "invalid_json_schema",
-                      param: "text.format.schema",
-                    },
-                  }),
+                  message:
+                    typeof options.rejectOutputSchema === "string"
+                      ? options.rejectOutputSchema
+                      : JSON.stringify({
+                          error: {
+                            type: "invalid_request_error",
+                            code: "invalid_json_schema",
+                            param: "text.format.schema",
+                          },
+                        }),
                   codexErrorInfo: "other",
                 },
                 willRetry: false,

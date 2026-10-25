@@ -12,10 +12,7 @@ import {
 } from "./attempt-client-cleanup.js";
 import type { CodexAppServerAuthRequirement, CodexAppServerPreparedAuth } from "./auth-types.js";
 import { assertCodexPrivateHookIsolation } from "./bounded-hook-policy.js";
-import {
-  buildOutputSchemaFallbackPrompt,
-  isCodexOutputSchemaUnsupported,
-} from "./bounded-turn-output-schema.js";
+import { isCodexOutputSchemaUnsupported } from "./bounded-turn-output-schema.js";
 import type { CodexAppServerClient } from "./client.js";
 import { resolveCodexAppServerRuntimeOptions, type CodexPluginConfig } from "./config.js";
 import { createCodexElicitationResponse } from "./elicitation-response.js";
@@ -234,7 +231,7 @@ async function runBoundedCodexAppServerTurnInWorkspace(
   }
   const timeout = setTimeout(() => abortRun(timeoutError), Math.max(1, remainingRunMs));
   timeout.unref?.();
-  let retryWithoutOutputSchema = false;
+  let fallbackInput: CodexUserInput[];
   const requestOptions = {
     timeoutMs,
     signal: abortController.signal,
@@ -412,39 +409,32 @@ async function runBoundedCodexAppServerTurnInWorkspace(
         timeoutError,
       );
     }
-    if (params.outputSchema && isCodexOutputSchemaUnsupported(error)) {
-      retryWithoutOutputSchema = true;
-    } else {
+    if (!params.outputSchema || !isCodexOutputSchemaUnsupported(error)) {
       throw codexPrewriteRejectionCause(error);
     }
+    fallbackInput = [
+      ...params.input,
+      {
+        type: "text",
+        text:
+          "Return one valid JSON value matching this JSON Schema. Do not include markdown or commentary.\n\n" +
+          JSON.stringify(params.outputSchema),
+        text_elements: [],
+      },
+    ];
   } finally {
     clearTimeout(timeout);
     params.signal?.removeEventListener("abort", abortFromCaller);
     await interruptPromise;
     await closeCodexStartupClientBestEffort(client);
   }
-  if (retryWithoutOutputSchema && params.outputSchema) {
-    // Codex accepts a stricter schema subset than llm-task validates. Preserve the
-    // caller's existing user-level prompt behavior within the original deadline.
-    const { outputSchema, ...fallbackParams } = params;
-    return await runBoundedCodexAppServerTurnInWorkspace(
-      {
-        ...fallbackParams,
-        input: [
-          ...fallbackParams.input,
-          {
-            type: "text",
-            text: buildOutputSchemaFallbackPrompt(outputSchema),
-            text_elements: [],
-          },
-        ],
-      },
-      appServer,
-      workspace,
-      { deadline, timeoutMs: totalTimeoutMs },
-    );
-  }
-  throw new Error("Codex bounded turn schema retry exited unexpectedly");
+  // Retry only after the rejected client's cleanup, within the original deadline.
+  return await runBoundedCodexAppServerTurnInWorkspace(
+    { ...params, input: fallbackInput, outputSchema: undefined },
+    appServer,
+    workspace,
+    { deadline, timeoutMs: totalTimeoutMs },
+  );
 }
 
 function resolveBoundedThreadConfig(

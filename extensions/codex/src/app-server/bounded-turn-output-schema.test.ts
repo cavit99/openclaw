@@ -41,8 +41,11 @@ describe("runBoundedCodexAppServerTurn output schemas", () => {
     expect(turnStart).toMatchObject({ outputSchema });
   });
 
-  it("falls back once on an explicit Codex schema-dialect rejection", async () => {
-    const fake = createClientFactory({ rejectOutputSchema: true });
+  it.each([
+    true,
+    "unexpected status 400 Bad Request: Invalid schema for response_format 'codex_output_schema': 'additionalProperties' is required, url: https://example.invalid/responses, request id: test-request",
+  ])("falls back once on an explicit Codex schema-dialect rejection (%s)", async (rejection) => {
+    const fake = createClientFactory({ rejectOutputSchema: rejection });
     const assertCurrent = vi.fn();
 
     await expect(runSchemaTurn(fake, { assertCurrent })).resolves.toMatchObject({
@@ -68,13 +71,60 @@ describe("runBoundedCodexAppServerTurn output schemas", () => {
     expect(fake.factory).toHaveBeenNthCalledWith(2, expect.objectContaining({ assertCurrent }));
   });
 
-  it("does not retry unrelated failures", async () => {
+  it.each([
+    "terminal upstream failure",
+    "unexpected status 400 Bad Request: Invalid request",
+    "unexpected status 429 Too Many Requests: Invalid schema for response_format 'codex_output_schema': rejected",
+  ])("does not retry unrelated failures (%s)", async (message) => {
     const fake = createClientFactory({
-      errorBeforeCompletion: { message: "terminal upstream failure", willRetry: false },
+      errorBeforeCompletion: { message, willRetry: false },
     });
 
-    await expect(runSchemaTurn(fake)).rejects.toThrow("terminal upstream failure");
+    await expect(runSchemaTurn(fake)).rejects.toThrow(message);
 
     expect(fake.request.mock.calls.filter(([method]) => method === "turn/start")).toHaveLength(1);
+  });
+
+  it("does not renew the deadline after native schema rejection", async () => {
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    const fake = createClientFactory({
+      rejectOutputSchema: true,
+      beforeRequest: async (method) => {
+        if (method === "turn/start") {
+          now = 5_001;
+        }
+      },
+    });
+
+    await expect(runSchemaTurn(fake)).rejects.toMatchObject({
+      name: "TimeoutError",
+      timeoutMs: 5_000,
+    });
+    expect(fake.factory).toHaveBeenCalledTimes(1);
+  });
+
+  it("rechecks caller authority before the fallback starts", async () => {
+    const retired = new Error("completion owner retired");
+    let current = true;
+    const fake = createClientFactory({
+      rejectOutputSchema: true,
+      beforeRequest: async (method) => {
+        if (method === "turn/start") {
+          current = false;
+        }
+      },
+    });
+
+    await expect(
+      runSchemaTurn(fake, {
+        assertCurrent: () => {
+          if (!current) {
+            throw retired;
+          }
+        },
+      }),
+    ).rejects.toBe(retired);
+    expect(fake.factory).toHaveBeenCalledTimes(1);
   });
 });

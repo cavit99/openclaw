@@ -1,8 +1,16 @@
-import { isJsonObject, type JsonObject } from "./protocol.js";
+import { isJsonObject } from "./protocol.js";
 
 export function isCodexOutputSchemaUnsupported(error: unknown): boolean {
   if (!(error instanceof Error)) {
     return false;
+  }
+  // Native HTTP errors extract the provider message before adding status and request metadata.
+  if (
+    error.message.startsWith(
+      "unexpected status 400 Bad Request: Invalid schema for response_format 'codex_output_schema':",
+    )
+  ) {
+    return true;
   }
   let payload: unknown;
   try {
@@ -17,11 +25,4 @@ export function isCodexOutputSchemaUnsupported(error: unknown): boolean {
     failure.code === "invalid_json_schema" &&
     failure.param === "text.format.schema"
   );
-}
-
-export function buildOutputSchemaFallbackPrompt(outputSchema: JsonObject): string {
-  return [
-    "Return one valid JSON value matching this JSON Schema. Do not include markdown or commentary.",
-    JSON.stringify(outputSchema),
-  ].join("\n\n");
 }
