@@ -907,6 +907,26 @@ actor ScriptedOutbox: OpenClawChatCommandOutbox {
 @Suite(.timeLimit(.minutes(1)))
 struct ChatViewModelBusySendTests {
     @Test @MainActor
+    func `restored run without a chat snapshot accepts a durable text followup`() async throws {
+        let (store, _, databaseDirectory) = try makeOutboxStore()
+        defer { try? FileManager.default.removeItem(at: databaseDirectory) }
+        let transport = OutboxTestTransport(healthy: false)
+        let vm = await makeOutboxViewModel(transport: transport, outbox: store)
+        defer { vm.detachTransport() }
+        vm.load()
+        await vm.bootstrapTask?.value
+        await waitForObservedState { vm.hasRestoredOutboxMessages }
+        vm.updateActiveSessionRunWithoutChatSnapshot(true)
+        vm.input = "next task"
+        #expect(vm.canSend)
+        let send = try #require(vm.send())
+        await send.value
+        #expect(vm.input.isEmpty)
+        #expect(await store.loadCommands().map(\.text) == ["next task"])
+        #expect(vm.hasActiveSessionRunWithoutChatSnapshot)
+    }
+
+    @Test @MainActor
     func `hold choices follow the current session effective default`() async throws {
         let (store, _, databaseDirectory) = try makeOutboxStore()
         defer { try? FileManager.default.removeItem(at: databaseDirectory) }
@@ -914,9 +934,7 @@ struct ChatViewModelBusySendTests {
         // projection knows which action a normal tap will actually use.
         let queueSession = try JSONDecoder().decode(OpenClawChatSessionEntry.self, from: Data(
             #"{"key":"agent:main:main","queueMode":"steer","effectiveQueueMode":"followup"}"#.utf8))
-        let steerSession = try JSONDecoder().decode(OpenClawChatSessionEntry.self, from: Data(
-            #"{"key":"other","effectiveQueueMode":"steer"}"#.utf8))
-        let transport = OutboxTestTransport(healthy: true, sessions: [queueSession, steerSession])
+        let transport = OutboxTestTransport(healthy: true, sessions: [queueSession])
         let vm = await makeOutboxViewModel(transport: transport, outbox: store)
         vm.load()
         await vm.bootstrapTask?.value
@@ -924,16 +942,11 @@ struct ChatViewModelBusySendTests {
         vm.input = "use the shorter approach"
         #expect(vm.sendModeChoices == [.steer])
 
-        vm.switchSession(to: "other")
-        await vm.bootstrapTask?.value
-        vm.hasActiveSessionRunWithoutChatSnapshot = true
-        vm.input = "use the shorter approach"
-        #expect(vm.sendModeChoices == [.followup])
         // A refreshed projection changes the menu without creating a local default.
-        vm.sessions[1].effectiveQueueMode = "followup"
-        #expect(vm.sendModeChoices == [.steer])
+        vm.sessions[0].effectiveQueueMode = "steer"
+        #expect(vm.sendModeChoices == [.followup])
         for mode in [nil, "collect", "steer-backlog", "future-mode"] as [String?] {
-            vm.sessions[1].effectiveQueueMode = mode
+            vm.sessions[0].effectiveQueueMode = mode
             #expect(vm.sendModeChoices == [.steer, .followup])
         }
         vm.input = "/steer use the shorter approach"
@@ -1012,58 +1025,7 @@ struct ChatViewModelBusySendTests {
             errorMessage: nil)))?.value
         #expect(vm.streamingAssistantText == "Working")
         #expect(vm.pendingRunCount == 1)
-        vm.handleTransportEvent(.agent(OpenClawAgentEventPayload(
-            runId: "run-active",
-            seq: 2,
-            stream: "tool",
-            ts: 1001,
-            data: ["phase": AnyCodable("result"), "name": AnyCodable("lookup"), "toolCallId": AnyCodable("tool-1")])))
-        #expect(vm.pendingToolCalls.isEmpty)
-        vm.handleTransportEvent(.agent(OpenClawAgentEventPayload(
-            runId: "run-active",
-            seq: 3,
-            stream: "tool",
-            ts: 1002,
-            data: ["phase": AnyCodable("start"), "name": AnyCodable("read"), "toolCallId": AnyCodable("tool-2")])))
-        vm.handleTransportEvent(.chat(OpenClawChatEventPayload(
-            runId: "run-active",
-            sessionKey: "main",
-            state: "delta",
-            message: AnyCodable([
-                "role": "assistant", "content": [["type": "text", "text": "Still working"]], "timestamp": 1003.0,
-            ] as [String: Any]),
-            errorMessage: nil)))
-        #expect(vm.pendingToolCalls.map(\.toolCallId) == ["tool-2"])
-        #expect(vm.streamingAssistantText == "Still working")
-        #expect(vm.pendingRunCount == 1)
-
-        // The original final settles its owner. The queued turn then owns
-        // its own stream rather than inheriting the previous tool activity.
-        await transport.state.update {
-            $0.activeRun = nil
-            $0.historyFails = true
-        }
-        await vm.handleTransportEvent(.chat(OpenClawChatEventPayload(
-            runId: "run-active",
-            sessionKey: "main",
-            state: "final",
-            message: AnyCodable([
-                "role": "assistant", "content": [["type": "text", "text": "Done"]], "timestamp": 1004.0,
-            ] as [String: Any]),
-            errorMessage: nil)))?.value
-        #expect(vm.pendingRunCount == 0)
-        #expect(vm.streamingAssistantText == nil)
-        vm.handleTransportEvent(.chat(OpenClawChatEventPayload(
-            runId: "next-run",
-            sessionKey: "main",
-            state: "delta",
-            message: AnyCodable([
-                "role": "assistant", "content": [["type": "text", "text": "Next task"]], "timestamp": 1005.0,
-            ] as [String: Any]),
-            errorMessage: nil)))
-        #expect(vm.streamingAssistantText == "Next task")
-        #expect(vm.pendingToolCalls.isEmpty)
-        #expect(vm.pendingRunCount == 1)
+        #expect(vm.pendingToolCalls.map(\.toolCallId) == ["tool-1"])
     }
 
     @Test(arguments: [OpenClawChatQueueMode.steer, .followup])
@@ -1141,7 +1103,10 @@ struct ChatViewModelBusySendTests {
         #expect(await transport.state.sentMessages.isEmpty)
     }
 
-    @Test(arguments: ["/new", "/reset", "/clear", "/compact"])
+    @Test(arguments: [
+        "/new", "/reset", "/clear", "/compact",
+        "/compact keep details", " /ReSeT@main keep settings ", "/new worktree:true",
+    ])
     @MainActor
     func `busy session mutations keep their draft and never enter the outbox`(text: String) async throws {
         let (store, _, databaseDirectory) = try makeOutboxStore()

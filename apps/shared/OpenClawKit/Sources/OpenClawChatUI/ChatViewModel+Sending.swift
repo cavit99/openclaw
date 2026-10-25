@@ -24,12 +24,12 @@ extension OpenClawChatViewModel {
     }
 
     private var canSendDuringRun: Bool {
-        self.outbox != nil && self.attachments.isEmpty &&
-            !localSessionCommands.contains(self.input.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        let command = Self.slashCommandName(from: self.input).map { "/\($0)" } ?? ""
+        return self.outbox != nil && self.attachments.isEmpty && !localSessionCommands.contains(command)
     }
 
     var canChooseSendMode: Bool {
-        self.hasBlockingRunActivity && self.canSend && self.canSendDuringRun &&
+        self.hasBlockingRunActivity && self.canSend &&
             !Self.isSlashCommandDraft(self.input.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 

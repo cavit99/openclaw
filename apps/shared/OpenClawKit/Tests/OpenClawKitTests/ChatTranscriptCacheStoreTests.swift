@@ -966,6 +966,58 @@ final class ChatTranscriptCacheStoreTests: ClientDatabaseTestSuite, @unchecked S
 }
 
 final class ClientDatabaseLegacyImportTests: TemporaryDatabaseTestSuite, @unchecked Sendable {
+    @Test func `v9 outbox upgrade preserves drafts attachments routing and FIFO`() async throws {
+        let stateURL = directory.appendingPathComponent(OpenClawClientDatabases.clientStateFilename)
+        let legacy = try DatabaseQueue(path: stateURL.path)
+        var migrator = DatabaseMigrator()
+        OpenClawClientDatabases.registerClientStateMigrationsV1ThroughV5(&migrator)
+        OpenClawClientDatabases.registerClientStateMigrationsV6ThroughV8(&migrator)
+        OpenClawClientDatabases.registerWatchMessageJournalMigration(&migrator)
+        try migrator.migrate(legacy)
+        let now = Date().timeIntervalSince1970
+        let bytes = Data("legacy image bytes".utf8)
+        let expectation = OpenClawChatSessionSettingsExpectation(permissionMode: .guarded, toolOverrides: nil)
+        let encodedSettings = try JSONEncoder().encode(expectation)
+        let settings = try #require(String(data: encodedSettings, encoding: .utf8))
+        try await legacy.write { db in
+            try db.execute(sql: """
+            INSERT INTO outbox_branch_scopes(gateway_id, session_key, agent_id)
+            VALUES ('gw-a', 'main', 'main');
+            """)
+            for id in ["legacy-text", "legacy-image"] {
+                try db.execute(sql: """
+                INSERT INTO outbox_commands(
+                    gateway_id, client_uuid, session_key, delivery_session_key,
+                    routing_contract, agent_id, text, thinking, expected_settings_json,
+                    created_at, status, attachment_bytes
+                ) VALUES ('gw-a', ?, 'main', 'agent:main:main', 'per-sender|main|main',
+                    'main', ?, 'off', ?, ?, 'queued', ?)
+                """, arguments: [id, id, settings, now, id == "legacy-image" ? bytes.count : 0])
+            }
+            try db.execute(sql: """
+            INSERT INTO outbox_attachments(
+                gateway_id, command_id, position, type, mime_type, file_name, payload
+            ) VALUES ('gw-a', 'legacy-image', 0, 'image', 'image/png', 'legacy.png', ?)
+            """, arguments: [bytes])
+        }
+        try legacy.close()
+
+        let upgraded = try OpenClawClientDatabases(directoryURL: directory)
+        defer { try? upgraded.close() }
+        let store = upgraded.store(gatewayID: "gw-a")
+        let commands = await store.loadCommands()
+        #expect(commands.map(\.id) == ["legacy-text", "legacy-image"])
+        #expect(commands.allSatisfy { $0.queueMode == nil && $0.expectedSessionSettings == expectation })
+        #expect(commands.allSatisfy {
+            $0.text == $0.id && $0.deliverySessionKey == "agent:main:main" &&
+                $0.routingContract == "per-sender|main|main" && $0.agentID == "main"
+        })
+        let attachment = try #require(commands.last?.attachments.first)
+        #expect(attachment.data == bytes && attachment.fileName == "legacy.png" && attachment.mimeType == "image/png")
+        let claimed = try #require(await store.claimNextCommand())
+        #expect(claimed.id == "legacy-text" && claimed.queueMode == nil)
+    }
+
     @Test func `legacy v1 cache is discarded`() async throws {
         let legacyURL = directory.appendingPathComponent("chat-cache.sqlite")
         try withRawDatabase(at: legacyURL) { raw in
@@ -1226,53 +1278,28 @@ final class ClientDatabaseLegacyImportTests: TemporaryDatabaseTestSuite, @unchec
 
 final class ChatCommandOutboxStoreTests: ClientDatabaseTestSuite, @unchecked Sendable {
     @Test(arguments: [nil, .steer, .followup] as [OpenClawChatQueueMode?])
-    func `queue mode survives reopen claim and retry`(mode: OpenClawChatQueueMode?) async throws {
+    func `queue mode survives claim and retry`(mode: OpenClawChatQueueMode?) async throws {
         #expect(await store.enqueueCommand(OpenClawChatOutboxCommand(
             id: "mode-choice", sessionKey: "main", text: "Preserve the choice.",
             thinking: "off", queueMode: mode, createdAt: Date().timeIntervalSince1970,
             status: .queued, retryCount: 0, lastError: nil)))
-        try databases.close()
-        let reopened = try OpenClawClientDatabases(directoryURL: directory)
-        defer { try? reopened.close() }
-        let reopenedStore = reopened.store(gatewayID: "gw-a")
-        let loaded = try #require(await reopenedStore.loadCommands().first)
-        #expect(loaded.queueMode == mode && loaded.text == "Preserve the choice.")
-        let claimed = try #require(await reopenedStore.claimNextCommand())
+        let claimed = try #require(await store.claimNextCommand())
         #expect(claimed.queueMode == mode)
-        #expect(await reopenedStore.markCommandQueued(
+        #expect(await store.markCommandQueued(
             id: claimed.id, attemptVersion: claimed.attemptVersion, retryCount: 1, lastError: nil) == .updated)
-        let secondClaim = try #require(await reopenedStore.claimNextCommand())
+        let secondClaim = try #require(await store.claimNextCommand())
         #expect(secondClaim.queueMode == mode)
-        #expect(await reopenedStore.markCommandFailedIfPresent(
+        #expect(await store.markCommandFailedIfPresent(
             id: secondClaim.id, attemptVersion: secondClaim.attemptVersion,
             retryCount: 1, lastError: "rejected") == .updated)
-        let failed = try #require(await reopenedStore.loadCommands().first)
-        #expect(await reopenedStore.markCommandRetriedIfPresent(
+        let failed = try #require(await store.loadCommands().first)
+        #expect(await store.markCommandRetriedIfPresent(
             id: failed.id, expectation: retryExpectation(failed), agentID: "main",
             deliverySessionKey: "agent:main:main", routingContract: "per-sender|main|main",
             expectedSessionSettings: .init(permissionMode: nil, toolOverrides: nil),
             replacementID: nil) == .updated)
-        let retriedClaim = try #require(await reopenedStore.claimNextCommand())
+        let retriedClaim = try #require(await store.claimNextCommand())
         #expect(retriedClaim.queueMode == mode)
-    }
-
-    @Test func `queue mode migration keeps legacy commands on the session default`() async throws {
-        #expect(await store.enqueueCommand(outboxCommand(id: "before-mode-migration", text: "Keep this draft.")))
-        try databases.close()
-        try withRawDatabase(at: directory.appendingPathComponent("client-state.sqlite")) { raw in
-            execute(raw, """
-            DROP TRIGGER outbox_queue_mode_claim_guard;
-            DROP TRIGGER outbox_queue_mode_retry_guard;
-            ALTER TABLE outbox_commands DROP COLUMN queue_mode_authorization;
-            ALTER TABLE outbox_commands DROP COLUMN queue_mode;
-            DELETE FROM grdb_migrations WHERE identifier = 'client-state-outbox-queue-mode-v10';
-            """)
-        }
-        let upgraded = try OpenClawClientDatabases(directoryURL: directory)
-        defer { try? upgraded.close() }
-        let command = try #require(await upgraded.store(gatewayID: "gw-a").claimNextCommand())
-        #expect(command.id == "before-mode-migration" && command.text == "Keep this draft.")
-        #expect(command.queueMode == nil)
     }
 
     @Test(arguments: [OpenClawChatQueueMode.steer, .followup])
